@@ -154,6 +154,13 @@
          </spacer>
         </item>
         <item>
+         <widget class="QLabel" name="sync_warn_label">
+          <property name="text">
+           <string>Синхранизация...</string>
+          </property>
+         </widget>
+        </item>
+        <item>
          <layout class="QHBoxLayout" name="horizontalLayout_2">
           <property name="spacing">
            <number>0</number>
@@ -319,7 +326,7 @@
          </widget>
         </item>
         <item>
-         <layout class="QHBoxLayout" name="horizontalLayout_5" stretch="1,4,1">
+         <layout class="QHBoxLayout" name="horizontalLayout_5" stretch="1,7,1">
           <item>
            <spacer name="horizontalSpacer_6">
             <property name="orientation">
@@ -349,34 +356,34 @@
               </property>
              </widget>
             </item>
-            <item row="1" column="0">
+            <item row="2" column="0">
              <widget class="QLabel" name="label_2">
               <property name="text">
                <string>URL синхронизации</string>
               </property>
              </widget>
             </item>
-            <item row="1" column="1">
+            <item row="2" column="1">
              <widget class="QLineEdit" name="sync_url_input"/>
             </item>
-            <item row="3" column="0">
+            <item row="4" column="0">
              <widget class="QLabel" name="label_3">
               <property name="text">
                <string>Пароль</string>
               </property>
              </widget>
             </item>
-            <item row="2" column="0">
+            <item row="3" column="0">
              <widget class="QLabel" name="label_4">
               <property name="text">
                <string>Логин</string>
               </property>
              </widget>
             </item>
-            <item row="2" column="1">
+            <item row="3" column="1">
              <widget class="QLineEdit" name="login_sync_input"/>
             </item>
-            <item row="3" column="1">
+            <item row="4" column="1">
              <widget class="QLineEdit" name="password_sync_input">
               <property name="inputMask">
                <string/>
@@ -386,6 +393,20 @@
               </property>
               <property name="clearButtonEnabled">
                <bool>false</bool>
+              </property>
+             </widget>
+            </item>
+            <item row="1" column="0">
+             <widget class="QLabel" name="label_5">
+              <property name="text">
+               <string>Место хранения записей</string>
+              </property>
+             </widget>
+            </item>
+            <item row="1" column="1">
+             <widget class="QPushButton" name="set_save_place__button">
+              <property name="text">
+               <string>/</string>
               </property>
              </widget>
             </item>
@@ -427,7 +448,7 @@
           <item>
            <widget class="QPushButton" name="data_sync_button">
             <property name="text">
-             <string>Синхронизация даных из сервера</string>
+             <string>Синхронизация данных из сервера</string>
             </property>
            </widget>
           </item>
