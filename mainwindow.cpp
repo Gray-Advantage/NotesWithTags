@@ -1,7 +1,7 @@
 #include "mainwindow.h"
 #include "settingsmanager.h"
 #include "themeutils.h"
-#include "tagsmanager.h"
+#include "note.h"
 #include "./ui_mainwindow.h"
 
 #include <QFile>
@@ -13,14 +13,19 @@
 #include <QDebug>
 #include <QMessageBox>
 #include <QCompleter>
+#include <QFileDialog>
+#include <QNetworkReply>
+#include <QNetworkRequest>
+#include <QDesktopServices>
+#include <QUrl>
 
 MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent), ui(new Ui::MainWindow)
 {
     ui->setupUi(this);
+    networkManager = new QNetworkAccessManager(this);
 
     connect(ui->search_input, &QLineEdit::textChanged, this, &MainWindow::on_search_input_textChanged);
-
 
     SettingsManager &s = SettingsManager::instance();
     ThemeUtils::applyTheme(s.theme());
@@ -34,6 +39,7 @@ MainWindow::MainWindow(QWidget *parent)
     ui->sync_url_input->setText(s.syncUrl());
     ui->login_sync_input->setText(s.login());
     ui->password_sync_input->setText(s.password());
+    ui->set_save_place_button->setText(s.saveLocation());
 
     tagsCompleter = new QCompleter(tagsManager.allTags(), this);
     tagsCompleter->setCaseSensitivity(Qt::CaseInsensitive);
@@ -46,73 +52,47 @@ MainWindow::MainWindow(QWidget *parent)
             ui->tags_searcher->clear();
         }
     });
-}
 
+    performSync();
+}
 
 MainWindow::~MainWindow()
 {
     delete ui;
 }
 
-
 void MainWindow::on_open_settings_button_clicked()
 {
     ui->pages->setCurrentIndex(4);
 }
 
-
 void MainWindow::on_search_input_returnPressed() {
     QString searchText = ui->search_input->text().trimmed();
+    if (searchText.isEmpty()) return;
 
-    if (searchText.isEmpty())
+    QList<Note> notes = noteManager.searchNotes(searchText);
+    if (notes.isEmpty()) {
+        QMessageBox::information(this, "Не найдено", "Заметка по запросу не найдена.");
         return;
-
-    QDir dir("notes");
-    QStringList files = dir.entryList(QStringList() << "*.json", QDir::Files);
-    for (const QString &file : files) {
-        QFile f(dir.filePath(file));
-        if (!f.open(QIODevice::ReadOnly))
-            continue;
-
-        QJsonDocument doc = QJsonDocument::fromJson(f.readAll());
-        f.close();
-        QJsonObject obj = doc.object();
-
-        QString title = obj["title"].toString();
-        QJsonArray tags = obj["tags"].toArray();
-
-        // Поиск по заголовку или тегу
-        if (title.contains(searchText, Qt::CaseInsensitive) ||
-            std::any_of(tags.begin(), tags.end(), [&](const QJsonValue &v) {
-                return v.toString().contains(searchText, Qt::CaseInsensitive);
-            })) {
-
-            // Загрузим данные в форму редактирования
-            ui->note_title->setText(title);
-            ui->note_text->setPlainText(obj["text"].toString());
-
-            // Очищаем контейнер с тегами
-            currentTags.clear();
-            QLayoutItem *child;
-            while ((child = ui->tags_container->takeAt(0)) != nullptr) {
-                delete child->widget();
-                delete child;
-            }
-
-            // Добавляем теги на страницу редактирования
-            for (const QJsonValue &tagVal : tags) {
-                addTag(tagVal.toString()); // Функция добавления тега
-            }
-
-            ui->pages->setCurrentIndex(3); // перейти на экран редактирования
-            return;
-        }
     }
 
-    QMessageBox::information(this, "Не найдено", "Заметка по запросу не найдена.");
+    Note note = notes.first();
+    ui->note_title->setText(note.title());
+    ui->note_text->setPlainText(note.text());
+
+    currentTags.clear();
+    QLayoutItem *child;
+    while ((child = ui->tags_container->takeAt(0)) != nullptr) {
+        delete child->widget();
+        delete child;
+    }
+
+    for (const QString &tag : note.tags()) {
+        addTag(tag);
+    }
+
+    ui->pages->setCurrentIndex(3);
 }
-
-
 
 void MainWindow::on_add_new_entry_button_clicked()
 {
@@ -121,7 +101,6 @@ void MainWindow::on_add_new_entry_button_clicked()
     int itemCount = ui->tags_container->count();
 
     if (itemCount != 1) {
-        // Проходим по всем элементам, кроме последнего (пружины)
         for (int i = 0; i < itemCount - 1; ++i) {
             child = ui->tags_container->takeAt(0);
             if (child) {
@@ -133,13 +112,8 @@ void MainWindow::on_add_new_entry_button_clicked()
 
     ui->note_text->clear();
     ui->note_title->clear();
-
     ui->pages->setCurrentIndex(3);
 }
-
-
-// Settings page
-
 
 void MainWindow::on_sync_url_input_returnPressed() {
     SettingsManager::instance().setSyncUrl(ui->sync_url_input->text());
@@ -162,32 +136,26 @@ void MainWindow::on_theme_change_button_clicked()
 
     ui->theme_change_button->setText(
         newTheme == "dark" ? "Сменить на светлую" : "Сменить на тёмную"
-    );
+        );
 }
-
 
 void MainWindow::on_data_sync_button_clicked()
 {
-    ui->pages->setCurrentIndex(3);
+    performSync();
 }
-
 
 void MainWindow::on_back_button_clicked()
 {
     ui->pages->setCurrentIndex(0);
 }
 
-
-// Note edit page
-
-
 void MainWindow::addTag(const QString &tag) {
-    if (currentTags.contains(tag)) return; // не добавлять повторно
+    if (currentTags.contains(tag)) return;
 
     currentTags.insert(tag);
 
     QPushButton *btn = new QPushButton(tag);
-    btn->setObjectName(tag); // <-- Важно!
+    btn->setObjectName(tag);
     btn->setStyleSheet("border: 1px solid gray; border-radius: 3px; padding: 2px 5px;");
 
     connect(btn, &QPushButton::clicked, this, [=]() {
@@ -199,8 +167,6 @@ void MainWindow::addTag(const QString &tag) {
     btn->installEventFilter(this);
     ui->tags_container->insertWidget(ui->tags_container->count() - 1, btn);
 }
-
-
 
 bool MainWindow::eventFilter(QObject *obj, QEvent *event) {
     QPushButton *btn = qobject_cast<QPushButton *>(obj);
@@ -214,20 +180,18 @@ bool MainWindow::eventFilter(QObject *obj, QEvent *event) {
     return false;
 }
 
-
 void MainWindow::on_on_mane_page_button_clicked()
 {
     ui->pages->setCurrentIndex(0);
     QString currentText = ui->search_input->text();
-    ui->search_input->setText("");  // Очистим поле
-    ui->search_input->setText(currentText);  // Возвращаем прежний текст
+    ui->search_input->setText("");
+    ui->search_input->setText(currentText);
 }
 
 void MainWindow::updateCompleter() {
     tagsCompleter->model()->deleteLater();
     tagsCompleter->setModel(new QStringListModel(tagsManager.allTags(), this));
 }
-
 
 void MainWindow::on_save_note_button_clicked() {
     QString title = ui->note_title->text().trimmed();
@@ -240,8 +204,6 @@ void MainWindow::on_save_note_button_clicked() {
         return;
     }
 
-    QStringList tags = QStringList(currentTags.begin(), currentTags.end());
-
     if (title.isEmpty()) {
         QMessageBox::warning(this, "Пустой заголовок",
                              "Пожалуйста, введите заголовок заметки.");
@@ -249,39 +211,24 @@ void MainWindow::on_save_note_button_clicked() {
         return;
     }
 
-    QDir().mkpath("notes");
-    QString filePath = "notes/" + title + ".json";
-
-    // Убираем проверку на существование файла, чтобы разрешить редактирование с тем же заголовком
-    QJsonObject noteJson;
-    noteJson["title"] = title;
-    noteJson["text"] = text;
-
-    QJsonArray tagsArray;
-    for (const QString &tag : tags)
-        tagsArray.append(tag);
-    noteJson["tags"] = tagsArray;
-
-    QFile file(filePath);
-    if (file.open(QIODevice::WriteOnly)) {
-        file.write(QJsonDocument(noteJson).toJson(QJsonDocument::Indented));
-        file.close();
+    QStringList tags = QStringList(currentTags.begin(), currentTags.end());
+    Note note(title, text, tags);
+    if (note.save()) {
+        tagsManager.addTags(tags);
+        tagsManager.save();
+        updateCompleter();
+        syncNote(note);
+        ui->pages->setCurrentIndex(0);
+        QString currentText = ui->search_input->text();
+        ui->search_input->setText("");
+        ui->search_input->setText(currentText);
+    } else {
+        QMessageBox::warning(this, "Ошибка", "Не удалось сохранить заметку.");
     }
-
-    tagsManager.addTags(tags);
-    tagsManager.save();
-    updateCompleter();
-
-    ui->pages->setCurrentIndex(0); // Возвращаемся на главную страницу
-    QString currentText = ui->search_input->text();
-    ui->search_input->setText("");  // Очистим поле
-    ui->search_input->setText(currentText);  // Возвращаем прежний текст
 }
-
 
 void MainWindow::on_search_input_textChanged(const QString &text)
 {
-    // Очищаем текущий контейнер с заметками
     QLayoutItem *child;
     while ((child = ui->note_container->takeAt(0)) != nullptr) {
         delete child->widget();
@@ -291,107 +238,231 @@ void MainWindow::on_search_input_textChanged(const QString &text)
     QString searchText = text.trimmed();
     if (searchText.isEmpty()) return;
 
-    QDir dir("notes");
-    QStringList files = dir.entryList(QStringList() << "*.json", QDir::Files);
-    for (const QString &file : files) {
-        QFile f(dir.filePath(file));
-        if (!f.open(QIODevice::ReadOnly))
-            continue;
+    QList<Note> notes = noteManager.searchNotes(searchText);
+    for (const Note &note : notes) {
+        QHBoxLayout *noteLayout = new QHBoxLayout;
+        QLabel *titleLabel = new QLabel(note.title());
+        noteLayout->addWidget(titleLabel);
 
-        QJsonDocument doc = QJsonDocument::fromJson(f.readAll());
-        f.close();
-        QJsonObject obj = doc.object();
+        for (const QString &tag : note.tags()) {
+            QPushButton *tagButton = new QPushButton(tag);
+            tagButton->setObjectName(tag);
+            tagButton->setStyleSheet("border: 1px solid gray; border-radius: 3px; padding: 2px 5px;");
+            noteLayout->addWidget(tagButton);
+        }
 
-        QString title = obj["title"].toString();
-        QJsonArray tags = obj["tags"].toArray();
+        QSpacerItem *spacer = new QSpacerItem(20, 40, QSizePolicy::Minimum, QSizePolicy::Expanding);
+        noteLayout->addItem(spacer);
 
-        // Поиск по заголовку или тегу
-        if (title.contains(searchText, Qt::CaseInsensitive) ||
-            std::any_of(tags.begin(), tags.end(), [&](const QJsonValue &v) {
-                return v.toString().contains(searchText, Qt::CaseInsensitive);
-            })) {
+        QPushButton *editButton = new QPushButton("Редактировать");
+        noteLayout->addWidget(editButton);
+        connect(editButton, &QPushButton::clicked, this, [=]() {
+            ui->note_title->setText(note.title());
+            ui->note_text->setPlainText(note.text());
 
-            // Создаем кнопку для заголовка заметки
-            QHBoxLayout *noteLayout = new QHBoxLayout;
+            currentTags.clear();
+            QLayoutItem *child;
+            int itemCount = ui->tags_container->count();
 
-            QLabel *titleLabel = new QLabel(title);
-            noteLayout->addWidget(titleLabel);
-
-            // Добавляем кнопки для тегов
-            for (const QJsonValue &tagVal : tags) {
-                QPushButton *tagButton = new QPushButton(tagVal.toString());
-                tagButton->setObjectName(tagVal.toString());
-                tagButton->setStyleSheet("border: 1px solid gray; border-radius: 3px; padding: 2px 5px;");
-                noteLayout->addWidget(tagButton);
-
-                connect(tagButton, &QPushButton::clicked, this, [=]() {
-                    // Действие по нажатию кнопки (например, удаление записи или переход в редактирование)
-                });
-            }
-
-            // Добавляем "пружину" (спейсер) между тегами и кнопками
-            QSpacerItem *spacer = new QSpacerItem(20, 40, QSizePolicy::Minimum, QSizePolicy::Expanding);
-            noteLayout->addItem(spacer);  // Этот спейсер создаст промежуток
-
-            // Кнопка редактирования
-            QPushButton *editButton = new QPushButton("Редактировать");
-            noteLayout->addWidget(editButton);
-            connect(editButton, &QPushButton::clicked, this, [=]() {
-                // Действие по редактированию заметки
-                ui->note_title->setText(title);
-                ui->note_text->setPlainText(obj["text"].toString());
-
-                currentTags.clear();
-                QLayoutItem *child;
-                int itemCount = ui->tags_container->count();
-
-                if (itemCount != 1) {
-                    // Проходим по всем элементам, кроме последнего (пружины)
-                    for (int i = 0; i < itemCount - 1; ++i) {
-                        child = ui->tags_container->takeAt(0);
-                        if (child) {
-                            delete child->widget();
-                            delete child;
-                        }
+            if (itemCount != 1) {
+                for (int i = 0; i < itemCount - 1; ++i) {
+                    child = ui->tags_container->takeAt(0);
+                    if (child) {
+                        delete child->widget();
+                        delete child;
                     }
                 }
+            }
 
-                // Добавляем теги из заметки
-                for (const QJsonValue &tagVal : tags) {
-                    addTag(tagVal.toString()); // Функция добавления тега
-                }
+            for (const QString &tag : note.tags()) {
+                addTag(tag);
+            }
 
-                ui->pages->setCurrentIndex(3); // Переход на страницу редактирования
-            });
+            ui->pages->setCurrentIndex(3);
+        });
 
-            // Кнопка удаления
-            QPushButton *deleteButton = new QPushButton("Удалить");
-            noteLayout->addWidget(deleteButton);
-            connect(deleteButton, &QPushButton::clicked, this, [=]() {
-                // Действие по удалению заметки
-                QFile::remove(dir.filePath(file));
-                on_search_input_textChanged(searchText); // Перезагрузим результаты после удаления
-            });
+        QPushButton *deleteButton = new QPushButton("Удалить");
+        noteLayout->addWidget(deleteButton);
+        connect(deleteButton, &QPushButton::clicked, this, [=]() {
+            note.remove();
+            on_search_input_textChanged(searchText);
+        });
 
-            // Устанавливаем размеры кнопок
-            editButton->setMinimumWidth(100);
-            deleteButton->setMinimumWidth(70);
-            editButton->setMaximumWidth(100);
-            deleteButton->setMaximumWidth(70);
+        editButton->setMinimumWidth(100);
+        deleteButton->setMinimumWidth(70);
+        editButton->setMaximumWidth(100);
+        deleteButton->setMaximumWidth(70);
 
-            // Устанавливаем растяжение для кнопок и заголовка
-            noteLayout->setStretch(noteLayout->indexOf(titleLabel), 4);
-            noteLayout->setStretch(noteLayout->indexOf(editButton), 1);
-            noteLayout->setStretch(noteLayout->indexOf(deleteButton), 1);
+        noteLayout->setStretch(noteLayout->indexOf(titleLabel), 4);
+        noteLayout->setStretch(noteLayout->indexOf(editButton), 1);
+        noteLayout->setStretch(noteLayout->indexOf(deleteButton), 1);
 
-            // Добавляем layout для записи в общий контейнер
-            QWidget *noteWidget = new QWidget;
-            noteWidget->setLayout(noteLayout);
-            noteWidget->setMinimumHeight(50);
-            noteWidget->setMaximumHeight(50);
-            ui->note_container->addWidget(noteWidget);
-        }
+        QWidget *noteWidget = new QWidget;
+        noteWidget->setLayout(noteLayout);
+        noteWidget->setMinimumHeight(50);
+        noteWidget->setMaximumHeight(50);
+        ui->note_container->addWidget(noteWidget);
     }
 }
 
+void MainWindow::on_set_save_place_button_clicked()
+{
+    QString path = QFileDialog::getExistingDirectory(this, "Выберите папку для сохранения", SettingsManager::instance().saveLocation());
+    if (!path.isEmpty()) {
+        SettingsManager::instance().setSaveLocation(path);
+        ui->set_save_place_button->setText(path);
+    }
+}
 
+void MainWindow::on_open_register_button_clicked()
+{
+    SettingsManager &s = SettingsManager::instance();
+    QString baseUrl = s.syncUrl();
+    if (baseUrl.isEmpty()) {
+        QMessageBox::warning(this, "Ошибка", "Укажите URL синхронизации перед регистрацией.");
+        return;
+    }
+    QUrl url(baseUrl);
+    QString registerUrl = url.toString(QUrl::RemovePath | QUrl::StripTrailingSlash) + "/register";
+    QDesktopServices::openUrl(QUrl(registerUrl));
+}
+
+void MainWindow::syncNote(const Note &note)
+{
+    SettingsManager &s = SettingsManager::instance();
+    if (s.syncUrl().isEmpty() || s.login().isEmpty() || s.password().isEmpty()) {
+        ui->sync_warn_label->setText("Настройте параметры синхронизации");
+        ui->sync_warn_label_on_settings->setText("Настройте параметры синхронизации");
+        return;
+    }
+
+    ui->sync_warn_label->setText("Синхронизация...");
+    ui->sync_warn_label_on_settings->setText("Синхронизация...");
+
+    QUrl baseUrl(s.syncUrl());
+    QString notesUrl = baseUrl.toString(QUrl::RemovePath | QUrl::StripTrailingSlash) + "/notes";
+
+    QJsonObject noteJson;
+    noteJson["title"] = note.title();
+    noteJson["text"] = note.text();
+    QJsonArray tagsArray;
+    for (const QString &tag : note.tags())
+        tagsArray.append(tag);
+    noteJson["tags"] = tagsArray;
+
+    QNetworkRequest request{QUrl(notesUrl)};
+    request.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
+    request.setRawHeader("Login", s.login().toUtf8());
+    request.setRawHeader("Password", s.password().toUtf8());
+
+    QJsonDocument doc(noteJson);
+    QNetworkReply *reply = networkManager->post(request, doc.toJson(QJsonDocument::Indented));
+    connect(reply, &QNetworkReply::finished, this, [=]() {
+        handleSyncReply(reply);
+    });
+}
+
+void MainWindow::performSync()
+{
+    SettingsManager &s = SettingsManager::instance();
+    if (s.syncUrl().isEmpty() || s.login().isEmpty() || s.password().isEmpty()) {
+        ui->sync_warn_label->setText("Настройте параметры синхронизации");
+        ui->sync_warn_label_on_settings->setText("Настройте параметры синхронизации");
+        return;
+    }
+
+    if (s.saveLocation().isEmpty()) {
+        ui->sync_warn_label->setText("Укажите папку для сохранения заметок");
+        ui->sync_warn_label_on_settings->setText("Укажите папку для сохранения заметок");
+        return;
+    }
+
+    ui->sync_warn_label->setText("Синхронизация...");
+    ui->sync_warn_label_on_settings->setText("Синхронизация...");
+
+    QString saveLocation = s.saveLocation();
+    if (!saveLocation.isEmpty()) {
+        QDir dir(saveLocation);
+        dir.setNameFilters(QStringList() << "*.json");
+        for (const QString &fileName : dir.entryList(QDir::Files)) {
+            dir.remove(fileName);
+        }
+    }
+    tagsManager.clearTags();
+    tagsManager.save();
+    updateCompleter();
+
+    QUrl baseUrl(s.syncUrl());
+    QString notesUrl = baseUrl.toString(QUrl::RemovePath | QUrl::StripTrailingSlash) + "/notes";
+
+    QNetworkRequest request{QUrl(notesUrl)};
+    request.setRawHeader("Login", s.login().toUtf8());
+    request.setRawHeader("Password", s.password().toUtf8());
+
+    QNetworkReply *reply = networkManager->get(request);
+    connect(reply, &QNetworkReply::finished, this, [=]() {
+        handleSyncReply(reply);
+    });
+}
+
+void MainWindow::handleSyncReply(QNetworkReply *reply)
+{
+    QString errorMessage;
+    if (reply->error() != QNetworkReply::NoError) {
+        int httpStatus = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+        switch (httpStatus) {
+        case 401:
+            errorMessage = "Неверные логин или пароль";
+            break;
+        case 404:
+            errorMessage = "Сервер недоступен";
+            break;
+        default:
+            errorMessage = QString("Ошибка сервера: %1").arg(httpStatus);
+            break;
+        }
+        ui->sync_warn_label->setText(errorMessage);
+        ui->sync_warn_label_on_settings->setText(errorMessage);
+        reply->deleteLater();
+        return;
+    }
+
+    if (reply->operation() == QNetworkAccessManager::GetOperation) {
+        QByteArray responseData = reply->readAll();
+        QJsonDocument doc = QJsonDocument::fromJson(responseData);
+        if (doc.isArray()) {
+            QJsonArray notesArray = doc.array();
+            qDebug() << "Received" << notesArray.size() << "notes from server";
+            for (const QJsonValue &value : notesArray) {
+                QJsonObject obj = value.toObject();
+                QString title = obj["title"].toString();
+                QString text = obj["text"].toString();
+                QJsonArray tagsArray = obj["tags"].toArray();
+                QStringList tags;
+                for (const QJsonValue &tag : tagsArray)
+                    tags << tag.toString();
+
+                Note note(title, text, tags);
+                if (note.save()) {
+                    qDebug() << "Saved note:" << title;
+                    tagsManager.addTags(tags);
+                } else {
+                    qDebug() << "Failed to save note:" << title;
+                }
+            }
+            tagsManager.save();
+            updateCompleter();
+            ui->sync_warn_label->setText("Синхронизация завершена");
+            ui->sync_warn_label_on_settings->setText("Синхронизация завершена");
+        } else {
+            qDebug() << "Invalid response format:" << responseData;
+            ui->sync_warn_label->setText("Неверный формат данных от сервера");
+            ui->sync_warn_label_on_settings->setText("Неверный формат данных от сервера");
+        }
+    } else {
+        ui->sync_warn_label->setText("Синхронизация завершена");
+        ui->sync_warn_label_on_settings->setText("Синхронизация завершена");
+    }
+
+    reply->deleteLater();
+}

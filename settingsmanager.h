@@ -23,6 +23,9 @@ public:
     QString password() const;
     void setPassword(const QString &password);
 
+    QString saveLocation() const;
+    void setSaveLocation(const QString &path);
+
 private:
     SettingsManager();
     QString settingsPath() const;

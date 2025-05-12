@@ -1,22 +1,21 @@
-// tagsmanager.h
 #ifndef TAGSMANAGER_H
 #define TAGSMANAGER_H
 
 #include <QStringList>
+#include <QSet>
 
-class TagsManager {
+class TagsManager
+{
 public:
     TagsManager();
-
     QStringList allTags() const;
     void addTags(const QStringList &tags);
+    void clearTags();
     void save();
+    void load();
 
 private:
-    void load();
-    QString tagsFilePath() const;
-
-    QStringList tags;
+    QSet<QString> tags;
 };
 
 #endif // TAGSMANAGER_H

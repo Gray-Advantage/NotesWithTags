@@ -70,3 +70,12 @@ void SettingsManager::setPassword(const QString &password) {
     settings["password"] = password;
     save();
 }
+
+QString SettingsManager::saveLocation() const {
+    return settings.value("save_location").toString(QDir::currentPath());
+}
+
+void SettingsManager::setSaveLocation(const QString &path) {
+    settings["save_location"] = path;
+    save();
+}

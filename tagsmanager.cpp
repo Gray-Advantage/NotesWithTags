@@ -1,49 +1,84 @@
 #include "tagsmanager.h"
+#include "settingsmanager.h"
 #include <QFile>
 #include <QJsonDocument>
 #include <QJsonArray>
-#include <QDir>
 #include <QDebug>
+#include <QDir>
 
-TagsManager::TagsManager() {
+TagsManager::TagsManager()
+{
     load();
 }
 
-QString TagsManager::tagsFilePath() const {
-    return QDir::currentPath() + "/tags.json";
+QStringList TagsManager::allTags() const
+{
+    return QStringList(tags.begin(), tags.end());
 }
 
-void TagsManager::load() {
-    QFile file(tagsFilePath());
-    if (!file.open(QIODevice::ReadOnly)) return;
+void TagsManager::addTags(const QStringList &newTags)
+{
+    tags.unite(QSet<QString>(newTags.begin(), newTags.end()));
+}
+
+void TagsManager::clearTags()
+{
+    tags.clear();
+    save();
+}
+
+void TagsManager::save()
+{
+    QString saveLocation = SettingsManager::instance().saveLocation();
+    if (saveLocation.isEmpty()) {
+        qDebug() << "Save location is empty, cannot save tags";
+        return;
+    }
+
+    QDir dir(saveLocation);
+    if (!dir.exists()) {
+        dir.mkpath(saveLocation);
+    }
+
+    QFile file(dir.filePath("tags.json"));
+    if (!file.open(QIODevice::WriteOnly)) {
+        qDebug() << "Failed to open tags.json for writing";
+        return;
+    }
+
+    QJsonArray tagsArray;
+    for (const QString &tag : tags) {
+        tagsArray.append(tag);
+    }
+
+    QJsonDocument doc(tagsArray);
+    file.write(doc.toJson());
+    file.close();
+}
+
+void TagsManager::load()
+{
+    QString saveLocation = SettingsManager::instance().saveLocation();
+    if (saveLocation.isEmpty()) {
+        qDebug() << "Save location is empty, cannot load tags";
+        return;
+    }
+
+    QFile file(QDir(saveLocation).filePath("tags.json"));
+    if (!file.exists()) return;
+
+    if (!file.open(QIODevice::ReadOnly)) {
+        qDebug() << "Failed to open tags.json for reading";
+        return;
+    }
 
     QJsonDocument doc = QJsonDocument::fromJson(file.readAll());
-    QJsonArray arr = doc.array();
-    for (const auto &v : arr)
-        tags << v.toString();
-
     file.close();
-}
 
-QStringList TagsManager::allTags() const {
-    return tags;
-}
-
-void TagsManager::addTags(const QStringList &newTags) {
-    for (const QString &tag : newTags) {
-        if (!tags.contains(tag))
-            tags << tag;
+    if (doc.isArray()) {
+        QJsonArray tagsArray = doc.array();
+        for (const QJsonValue &value : tagsArray) {
+            tags.insert(value.toString());
+        }
     }
-}
-
-void TagsManager::save() {
-    QFile file(tagsFilePath());
-    if (!file.open(QIODevice::WriteOnly)) return;
-
-    QJsonArray arr;
-    for (const QString &tag : tags)
-        arr.append(tag);
-
-    file.write(QJsonDocument(arr).toJson(QJsonDocument::Indented));
-    file.close();
 }
